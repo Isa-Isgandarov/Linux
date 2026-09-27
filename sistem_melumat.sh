@@ -151,18 +151,28 @@ fi
 header "6. LSM (AppArmor / SELinux) STATUSU"
 # Ubuntu/Debian-da SELinux əvəzinə AppArmor istifadə olunur
 if command -v aa-status >/dev/null 2>&1; then
-    AA_ENABLED=$(aa-status --enabled 2>/dev/null; echo $?)
     if aa-status --enabled >/dev/null 2>&1; then
         echo -e "${GREEN}AppArmor:${NC} ${GREEN}AKTİV${NC}"
         echo ""
         aa-status 2>/dev/null | grep -E "profiles are (loaded|in enforce|in complain)" | sed 's/^/  /'
+        echo ""
+        echo -e "  Deaktiv etmək üçün: sudo systemctl stop apparmor && sudo systemctl disable apparmor"
     else
         echo -e "${GREEN}AppArmor:${NC} ${RED}DEAKTİV${NC}"
+        echo -e "  Aktiv etmək üçün: sudo systemctl start apparmor && sudo systemctl enable apparmor"
     fi
 elif command -v getenforce >/dev/null 2>&1; then
-    echo -e "${GREEN}SELinux:${NC} $(getenforce)"
+    SE_STATE=$(getenforce 2>/dev/null)
+    if [ "$SE_STATE" = "Enforcing" ]; then
+        echo -e "${GREEN}SELinux:${NC} ${GREEN}$SE_STATE (AKTİV)${NC}"
+        echo -e "  Deaktiv etmək (müvəqqəti) üçün: sudo setenforce 0"
+    else
+        echo -e "${GREEN}SELinux:${NC} ${RED}$SE_STATE${NC}"
+        echo -e "  Aktiv etmək (müvəqqəti) üçün: sudo setenforce 1"
+    fi
+    echo -e "  Daimi dəyişiklik üçün: /etc/selinux/config faylında SELINUX=enforcing və ya SELINUX=permissive yazın"
 else
-    echo "Nə AppArmor, nə də SELinux tapılmadı. Yoxlamaq üçün: sudo apt install apparmor apparmor-utils"
+    echo "Nə AppArmor, nə də SELinux tapılmadı. Quraşdırmaq üçün: sudo apt install apparmor apparmor-utils"
 fi
 
 # ---------------------------------------------------
