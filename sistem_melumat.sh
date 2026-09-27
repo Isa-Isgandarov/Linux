@@ -166,7 +166,17 @@ else
 fi
 
 # ---------------------------------------------------
-header "7. SİSTEM İSTİFADƏÇİLƏRİ"
+header "7. DİNLƏNƏN PORTLAR (ss -tulpan)"
+if command -v ss >/dev/null 2>&1; then
+    echo -e "${GREEN}Proto  Local Address:Port         Proses${NC}"
+    ss -tulpan 2>/dev/null | awk 'NR>1 {print "  " $1, $5, $7}'
+else
+    echo "ss əmri tapılmadı. netstat yoxlanılır:"
+    netstat -tulpn 2>/dev/null | sed 's/^/  /'
+fi
+
+# ---------------------------------------------------
+header "8. SİSTEM İSTİFADƏÇİLƏRİ"
 echo -e "${GREEN}Login edə bilən (real) istifadəçilər:${NC}"
 awk -F: '$3>=1000 && $1!="nobody" {print "  - " $1 " (UID:" $3 ", Shell:" $7 ")"}' /etc/passwd
 
