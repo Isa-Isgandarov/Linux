@@ -53,28 +53,52 @@ else
     echo -e "${GREEN}IP ünvanı:${NC} $IP_ADDR"
     echo -e "${GREEN}Gateway:${NC} $GATEWAY"
 
-    # Statik / Dinamik yoxlanışı
-    IP_METHOD="Naməlum"
+    # Statik / Dinamik yoxlanışı (bir neçə üsulla, sırayla yoxlanılır)
+    IP_METHOD=""
+    IP_SOURCE=""
+
+    # Üsul 1: NetworkManager (nmcli)
     if command -v nmcli >/dev/null 2>&1; then
-        CONN_NAME=$(nmcli -t -f DEVICE,NAME connection show --active | grep "^$MAIN_IF:" | cut -d: -f2)
+        CONN_NAME=$(nmcli -t -f DEVICE,NAME connection show --active 2>/dev/null | grep "^$MAIN_IF:" | cut -d: -f2)
         if [ -n "$CONN_NAME" ]; then
             METHOD=$(nmcli -g ipv4.method connection show "$CONN_NAME" 2>/dev/null)
             case "$METHOD" in
-                manual) IP_METHOD="STATİK (manual - NetworkManager)" ;;
-                auto)   IP_METHOD="DİNAMİK (DHCP - NetworkManager)" ;;
-                *)      IP_METHOD="Naməlum (NetworkManager: $METHOD)" ;;
+                manual) IP_METHOD="STATİK"; IP_SOURCE="NetworkManager: $CONN_NAME" ;;
+                auto)   IP_METHOD="DİNAMİK (DHCP)"; IP_SOURCE="NetworkManager: $CONN_NAME" ;;
             esac
         fi
     fi
-    # Netplan yaml-larda əlavə yoxlama (fallback)
-    if [ "$IP_METHOD" = "Naməlum" ] && [ -d /etc/netplan ]; then
-        if grep -q "dhcp4:\s*true" /etc/netplan/*.yaml 2>/dev/null; then
-            IP_METHOD="DİNAMİK (DHCP - netplan)"
-        elif grep -qE "addresses:" /etc/netplan/*.yaml 2>/dev/null; then
-            IP_METHOD="STATİK (netplan)"
+
+    # Üsul 2: Netplan yaml faylları
+    if [ -z "$IP_METHOD" ] && [ -d /etc/netplan ]; then
+        if grep -rq "dhcp4:\s*true" /etc/netplan/*.yaml 2>/dev/null; then
+            IP_METHOD="DİNAMİK (DHCP)"; IP_SOURCE="netplan"
+        elif grep -rqE "addresses:" /etc/netplan/*.yaml 2>/dev/null; then
+            IP_METHOD="STATİK"; IP_SOURCE="netplan"
         fi
     fi
-    echo -e "${GREEN}IP tipi:${NC} $IP_METHOD"
+
+    # Üsul 3: dhclient/systemd-networkd lease faylı axtarışı
+    if [ -z "$IP_METHOD" ]; then
+        if ls /var/lib/dhcp/*"$MAIN_IF"*.lease* >/dev/null 2>&1 || \
+           ls /run/systemd/netif/leases/* >/dev/null 2>&1; then
+            IP_METHOD="DİNAMİK (DHCP)"; IP_SOURCE="lease faylı tapıldı"
+        fi
+    fi
+
+    # Üsul 4 (son çarə): "ip addr" çıxışında valid_lft forever varsa, adətən statikdir
+    if [ -z "$IP_METHOD" ]; then
+        LFT_LINE=$(ip -4 addr show "$MAIN_IF" | grep "valid_lft")
+        if echo "$LFT_LINE" | grep -q "valid_lft forever"; then
+            IP_METHOD="STATİK (ehtimal, valid_lft=forever əsasında)"; IP_SOURCE="ip addr çıxışı"
+        elif [ -n "$LFT_LINE" ]; then
+            IP_METHOD="DİNAMİK (ehtimal, DHCP lease vaxtı var)"; IP_SOURCE="ip addr çıxışı"
+        else
+            IP_METHOD="Naməlum"; IP_SOURCE="heç bir üsulla aşkarlanmadı"
+        fi
+    fi
+
+    echo -e "${GREEN}IP tipi:${NC} $IP_METHOD  ${CYAN}(mənbə: $IP_SOURCE)${NC}"
 fi
 
 echo -e "${GREEN}DNS serverləri:${NC}"
@@ -96,19 +120,53 @@ else
 fi
 
 # ---------------------------------------------------
+RED='\033[0;31m'
 header "5. FIREWALL STATUSU"
 if command -v ufw >/dev/null 2>&1; then
-    echo -e "${GREEN}UFW:${NC}"
-    ufw status verbose 2>/dev/null | sed 's/^/  /'
+    UFW_RAW=$(ufw status 2>/dev/null | head -n1)
+    if echo "$UFW_RAW" | grep -qi "inactive"; then
+        echo -e "${GREEN}UFW:${NC} ${RED}DEAKTİV (söndürülüb)${NC}"
+        echo -e "  Aktiv etmək üçün: sudo ufw enable"
+    elif echo "$UFW_RAW" | grep -qi "active"; then
+        echo -e "${GREEN}UFW:${NC} ${GREEN}AKTİV${NC}"
+        echo ""
+        echo -e "${GREEN}Qaydalar:${NC}"
+        ufw status verbose 2>/dev/null | sed 's/^/  /'
+    else
+        echo -e "${GREEN}UFW:${NC} Status müəyyən edilə bilmədi (sudo ilə işlətməyi yoxlayın)"
+    fi
 elif command -v firewall-cmd >/dev/null 2>&1; then
-    echo -e "${GREEN}firewalld:${NC} $(firewall-cmd --state 2>/dev/null)"
+    FW_STATE=$(firewall-cmd --state 2>/dev/null)
+    if [ "$FW_STATE" = "running" ]; then
+        echo -e "${GREEN}firewalld:${NC} ${GREEN}AKTİV${NC}"
+    else
+        echo -e "${GREEN}firewalld:${NC} ${RED}DEAKTİV${NC}"
+    fi
 else
     echo "UFW/firewalld tapılmadı. iptables qaydalarına baxılır:"
     iptables -L -n 2>/dev/null | head -n 15 | sed 's/^/  /'
 fi
 
 # ---------------------------------------------------
-header "6. SİSTEM İSTİFADƏÇİLƏRİ"
+header "6. LSM (AppArmor / SELinux) STATUSU"
+# Ubuntu/Debian-da SELinux əvəzinə AppArmor istifadə olunur
+if command -v aa-status >/dev/null 2>&1; then
+    AA_ENABLED=$(aa-status --enabled 2>/dev/null; echo $?)
+    if aa-status --enabled >/dev/null 2>&1; then
+        echo -e "${GREEN}AppArmor:${NC} ${GREEN}AKTİV${NC}"
+        echo ""
+        aa-status 2>/dev/null | grep -E "profiles are (loaded|in enforce|in complain)" | sed 's/^/  /'
+    else
+        echo -e "${GREEN}AppArmor:${NC} ${RED}DEAKTİV${NC}"
+    fi
+elif command -v getenforce >/dev/null 2>&1; then
+    echo -e "${GREEN}SELinux:${NC} $(getenforce)"
+else
+    echo "Nə AppArmor, nə də SELinux tapılmadı. Yoxlamaq üçün: sudo apt install apparmor apparmor-utils"
+fi
+
+# ---------------------------------------------------
+header "7. SİSTEM İSTİFADƏÇİLƏRİ"
 echo -e "${GREEN}Login edə bilən (real) istifadəçilər:${NC}"
 awk -F: '$3>=1000 && $1!="nobody" {print "  - " $1 " (UID:" $3 ", Shell:" $7 ")"}' /etc/passwd
 
